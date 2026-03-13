@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit,
     QFileDialog, QMessageBox, QProgressBar, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QTabWidget, QListWidget, QListWidgetItem, QFrame
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QColor
@@ -14,6 +15,7 @@ from PySide6.QtGui import QFont, QColor
 from services.gemini_service import GeminiService
 from services.docx_generator import DocxGenerator
 from services.key_manager import KeyManager
+from services.docx_merger import merge_docx_files
 from config import APP_NAME, APP_VERSION
 
 
@@ -84,6 +86,34 @@ class BatchGenerateThread(QThread):
             self.all_finished.emit()
 
 
+class SelectionListWidget(QListWidget):
+    """QListWidget tùy chỉnh hỗ trợ phím Delete để xóa item"""
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Delete:
+            for item in self.selectedItems():
+                self.takeItem(self.row(item))
+        else:
+            super().keyPressEvent(event)
+
+
+class MergeWorker(QThread):
+    """Thread xử lý gộp file DOCX"""
+    progress = Signal(int, int, str)
+    finished_signal = Signal(bool, str)
+
+    def __init__(self, file_paths, output_path):
+        super().__init__()
+        self.file_paths = file_paths
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            merge_docx_files(self.file_paths, self.output_path, self.progress.emit)
+            self.finished_signal.emit(True, f"Đã gộp thành công vào file:\n{self.output_path}")
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
+
 class MainWindow(QMainWindow):
     """Main Window của QTKT Generator"""
     
@@ -100,16 +130,38 @@ class MainWindow(QMainWindow):
         self._load_saved_keys()
     
     def setup_ui(self):
-        """Thiết lập giao diện"""
+        """Thiết lập giao diện chính với Tabs"""
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(1000, 800)
         
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
         # Main layout
-        layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Tab Widget
+        self.tabs = QTabWidget()
+        
+        # Tab 1: Tạo Quy Trình
+        self.generator_tab = QWidget()
+        self.setup_generator_tab()
+        self.tabs.addTab(self.generator_tab, "📝 Tạo Quy Trình")
+        
+        # Tab 2: Gộp File
+        self.merger_tab = QWidget()
+        self.setup_merger_tab()
+        self.tabs.addTab(self.merger_tab, "📚 Gộp File DOCX")
+        
+        main_layout.addWidget(self.tabs)
+        
+        # Global Status bar
+        self.statusBar().showMessage("Sẵn sàng")
+
+    def setup_generator_tab(self):
+        """Thiết lập giao diện Tab Tạo Quy Trình (Logic cũ)"""
+        layout = QVBoxLayout(self.generator_tab)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
         
@@ -241,9 +293,6 @@ class MainWindow(QMainWindow):
         results_layout.addWidget(self.results_table)
         
         layout.addWidget(results_group, 1)  # Stretch factor = 1
-        
-        # Status bar
-        self.statusBar().showMessage("Sẵn sàng")
         
         # Apply stylesheet
         self.setStyleSheet("""
@@ -536,3 +585,156 @@ class MainWindow(QMainWindow):
         
         QMessageBox.critical(self, "Lỗi", f"Không thể tạo nội dung:\n{error_msg}")
         self.statusBar().showMessage("❌ Lỗi khi tạo nội dung")
+
+    # --- TAB 2: MERGER LOGIC ---
+    
+    def setup_merger_tab(self):
+        """Thiết lập giao diện Tab Gộp File DOCX"""
+        layout = QVBoxLayout(self.merger_tab)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        # Header Merger
+        header_text = QLabel("📚 Công cụ Gộp File Quy Trình")
+        header_text.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        header_text.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header_text)
+
+        # Help text
+        help_text = QLabel("Chọn nhiều file DOCX lẻ để gộp thành một file duy nhất (tự động ngắt trang).")
+        help_text.setStyleSheet("color: #666;")
+        help_text.setAlignment(Qt.AlignCenter)
+        layout.addWidget(help_text)
+
+        # Control Frame
+        ctrl_frame = QFrame()
+        ctrl_frame.setStyleSheet("QFrame { background-color: white; border-radius: 8px; border: 1px solid #ddd; }")
+        ctrl_layout = QVBoxLayout(ctrl_frame)
+        ctrl_layout.setContentsMargins(20, 20, 20, 20)
+
+        # File Selection Buttons
+        btn_layout = QHBoxLayout()
+        self.select_files_btn = QPushButton("📁 Chọn các file DOCX...")
+        self.select_files_btn.setMinimumHeight(45)
+        self.select_files_btn.clicked.connect(self.on_select_merge_files)
+        self.select_files_btn.setStyleSheet("""
+            QPushButton { background-color: #2196F3; color: white; border-radius: 5px; font-weight: bold; }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        
+        self.clear_list_btn = QPushButton("🗑️ Xóa danh sách")
+        self.clear_list_btn.setMinimumHeight(45)
+        self.clear_list_btn.clicked.connect(lambda: self.merge_list_widget.clear())
+        
+        btn_layout.addWidget(self.select_files_btn, 2)
+        btn_layout.addWidget(self.clear_list_btn, 1)
+        ctrl_layout.addLayout(btn_layout)
+
+        # List Widget
+        ctrl_layout.addWidget(QLabel("Các file sẽ được gộp (theo thứ tự từ trên xuống):"))
+        self.merge_list_widget = SelectionListWidget()
+        self.merge_list_widget.setSelectionMode(QListWidget.ExtendedSelection)
+        self.merge_list_widget.setMinimumHeight(250)
+        ctrl_layout.addWidget(self.merge_list_widget)
+        
+        # Output info
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Tên file gộp đầu ra:"))
+        self.merge_output_name = QLineEdit("QTKT_Tong_Hop.docx")
+        self.merge_output_name.setPlaceholderText("VD: QTKT_Noi_Khoa_V1.docx")
+        output_row.addWidget(self.merge_output_name)
+        ctrl_layout.addLayout(output_row)
+
+        layout.addWidget(ctrl_frame)
+
+        # Progress & Action
+        self.merge_progress_bar = QProgressBar()
+        self.merge_progress_bar.hide()
+        layout.addWidget(self.merge_progress_bar)
+
+        self.start_merge_btn = QPushButton("🚀 BẮT ĐẦU GỘP FILE")
+        self.start_merge_btn.setMinimumHeight(55)
+        self.start_merge_btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.start_merge_btn.clicked.connect(self.start_merge_process)
+        self.start_merge_btn.setStyleSheet("""
+            QPushButton { background-color: #673AB7; color: white; border-radius: 8px; }
+            QPushButton:hover { background-color: #5E35B1; }
+            QPushButton:disabled { background-color: #ccc; }
+        """)
+        layout.addWidget(self.start_merge_btn)
+        
+        layout.addStretch()
+
+    def on_select_merge_files(self):
+        """Mở dialog chọn nhiều file để gộp"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Chọn các file DOCX để gộp", 
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "QTKT ok"), 
+            "Word Files (*.docx)"
+        )
+        if files:
+            for f in files:
+                item = QListWidgetItem(f"📄 {os.path.basename(f)}")
+                item.setData(Qt.UserRole, f) # Lưu path tuyệt đối
+                item.setToolTip(f)
+                self.merge_list_widget.addItem(item)
+            self.statusBar().showMessage(f"Đã thêm {len(files)} file vào danh sách gộp.")
+
+    def start_merge_process(self):
+        """Bắt đầu quá trình gộp file trong thread riêng"""
+        file_paths = []
+        for i in range(self.merge_list_widget.count()):
+            item = self.merge_list_widget.item(i)
+            file_paths.append(item.data(Qt.UserRole))
+        
+        if not file_paths:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn ít nhất một file để gộp!")
+            return
+            
+        output_name = self.merge_output_name.text().strip()
+        if not output_name:
+            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập tên file kết quả!")
+            return
+            
+        if not output_name.lower().endswith(".docx"):
+            output_name += ".docx"
+            
+        # Đường dẫn lưu: cùng folder "QTKT ok"
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "QTKT ok")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, output_name)
+        
+        # UI Update
+        self.start_merge_btn.setEnabled(False)
+        self.select_files_btn.setEnabled(False)
+        self.clear_list_btn.setEnabled(False)
+        self.merge_progress_bar.setRange(0, 100)
+        self.merge_progress_bar.setValue(0)
+        self.merge_progress_bar.show()
+        self.statusBar().showMessage("Đang bắt đầu gộp file...")
+
+        # Worker
+        self.merge_worker = MergeWorker(file_paths, output_path)
+        self.merge_worker.progress.connect(self.update_merge_progress)
+        self.merge_worker.finished_signal.connect(self.on_merge_finished)
+        self.merge_worker.start()
+
+    def update_merge_progress(self, current, total, filename):
+        """Cập nhật tiến trình gộp"""
+        percent = int((current / total) * 100)
+        self.merge_progress_bar.setValue(percent)
+        self.statusBar().showMessage(f"Đang gộp ({current}/{total}): {filename}")
+
+    def on_merge_finished(self, success, message):
+        """Kết thúc quá trình gộp"""
+        self.start_merge_btn.setEnabled(True)
+        self.select_files_btn.setEnabled(True)
+        self.clear_list_btn.setEnabled(True)
+        self.merge_progress_bar.hide()
+        
+        if success:
+            self.statusBar().showMessage("✅ Đã gộp file thành công!")
+            QMessageBox.information(self, "Thành công", message)
+        else:
+            self.statusBar().showMessage("❌ Lỗi khi gộp file")
+            QMessageBox.critical(self, "Lỗi", f"Có lỗi xảy ra khi gộp:\n{message}")

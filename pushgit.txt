@@ -1,0 +1,5 @@
+viết file readme.md cho code này.
+push lên https://github.com/skul9x/QTKT-maker.git
+branch "main"
+Yêu cầu: không được force push nhé, giữ lịch sử commit, commit message bạn tự nghĩ, phải ngắn gọn nhé.
+token tôi sẽ gửi sau.
